@@ -25,7 +25,6 @@ SYSTEM_PROMPT = textwrap.dedent("""
     You are an expert compiler optimization agent.
     You will be shown the current state of a program as a list of instructions.
     Your job is to pick the best sequence of compiler passes to minimize instruction count.
-
     Available passes:
     - const_fold      : replaces instructions whose ALL args are integer constants with a single const.
                         Apply MULTIPLE TIMES to propagate constants through the program.
@@ -33,19 +32,16 @@ SYSTEM_PROMPT = textwrap.dedent("""
                         Apply AFTER const_fold to clean up now-unused variables.
     - noop            : does nothing. NEVER use this.
     - stop            : ends episode. Use ONLY when no further reduction is possible.
-
     STRATEGY:
     1. If any instruction has ALL integer args → use const_fold
     2. If any output variable is never referenced as an input → use dead_code_elim
     3. If neither applies → use stop
-
     Example:
       add [3,7]->x, mul[x,2]->y
       Step 1: const_fold  → const[10]->x, mul[x,2]->y   (x is now a known int)
       Step 2: const_fold  → const[10]->x, const[20]->y  (mul args are now all ints)
       Step 3: dead_code_elim → const[20]->y              (x is never used, removed)
       Step 4: stop
-
     Reply with ONLY the pass name. One of: const_fold, dead_code_elim, noop, stop
 """).strip()
 
@@ -112,14 +108,11 @@ def build_user_prompt(obs: dict, last_reward: float = 0.0) -> str:
     return textwrap.dedent(f"""
         Current program ({obs['num_instructions']} instructions):
         {inst_lines}
-
         Steps remaining: {obs['steps_left']}
         Last action:     {obs['last_action']}
         Last reward:     {last_reward:.2f}{warning}
-
         Analysis:
         {chr(10).join(hints)}
-
         Which pass should be applied next?
     """).strip()
 
