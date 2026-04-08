@@ -40,9 +40,8 @@ def run_task(task):
         if done:
             break
 
-    final_state = env.state()
-    final_count = final_state["num_instructions"]
-    score = grade(initial_count, final_count)
+        final_state = env.state()
+        score = task["grader"](final_state)  # Use the grader closure from the task
 
     return {
         **final_state,

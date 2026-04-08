@@ -1,27 +1,24 @@
-def grade(initial_cost, final_cost):
-    if initial_cost == 0:
-        return 1.0
-    score = (initial_cost - final_cost) / initial_cost
-    return max(0.0, min(1.0, score))
+# env/graders.py
 
-# --- OpenEnv Grader Wrappers ---
+_EPSILON = 1e-9  # ensures score strictly in (0,1)
 
-def _extract_final_count(data) -> int:
-    """Helper to safely extract the instruction count from OpenEnv's payload."""
-    if isinstance(data, list): 
-        # If OpenEnv passes a full trajectory history
-        return data[-1].get("num_instructions", 0)
-    # If OpenEnv passes the final state dictionary
-    return data.get("num_instructions", 0)
+def grade(initial_count: int):
+    """
+    Returns a grader closure for a task.
+    Scores are clamped within (0,1) to satisfy HF validation.
+    """
+    def grader(observation, reward=None, done=None):
+        program_data = observation.get("program", [])
+        if isinstance(program_data, list):
+            final_count = len(program_data)
+        elif isinstance(program_data, dict):
+            final_count = len(program_data.get("instructions", []))
+        else:
+            final_count = initial_count
 
-def grade_easy(data) -> float:
-    final_count = _extract_final_count(data)
-    return grade(2, final_count)  # Easy starts with 2 instructions
+        raw_score = (initial_count - final_count) / initial_count
+        # Clamp strictly within (0,1)
+        return float(max(_EPSILON, min(1.0 - _EPSILON, raw_score)))
 
-def grade_medium(data) -> float:
-    final_count = _extract_final_count(data)
-    return grade(3, final_count)  # Medium starts with 3 instructions
-
-def grade_hard(data) -> float:
-    final_count = _extract_final_count(data)
-    return grade(6, final_count)  # Hard starts with 6 instructions
+    grader.__name__ = "grader"
+    return grader
