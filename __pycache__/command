@@ -1,0 +1,6 @@
+export HF_TOKEN="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"          
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+export ENV_BASE_URL="http://localhost:7860"      
+export COMPILER_TASK="easy"
+export IMAGE_NAME="my-hf-space"                

@@ -1,0 +1,13 @@
+name: compiler-optimization-env
+version: "1.0.0"
+entry_point: serve:app
+
+tasks:
+  - easy
+  - medium
+  - hard
+
+endpoints:
+  reset: /reset
+  step:  /step
+  state: /state
