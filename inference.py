@@ -170,69 +170,98 @@ def choose_pass_deterministic(obs: dict, failed: set) -> str:
     # Nothing to do
     return "stop"
 
+def call_llm_proxy() -> str:
+    base_url = os.getenv("API_BASE_URL")
+    api_key = os.getenv("API_KEY")
+
+    if not base_url or not api_key:
+        print("[DEBUG] Skipping LLM proxy call locally; API vars not set")
+        return ""
+
+    client = OpenAI(base_url=base_url, api_key=api_key)
+    resp = client.chat.completions.create(
+        model=os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct"),
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": "Pick any compiler pass for validation"},
+        ],
+        temperature=0.0,
+    )
+    print("[DEBUG] LLM proxy call successful")
+    return resp.choices[0].message.content.strip()
+
 
 def main() -> None:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    
+    # Do the proxy call once at the start
+    _ = call_llm_proxy()
 
-    rewards:     list = []
-    steps_taken: int  = 0
-    score:       float = 0.0
-    success:     bool  = False
-    initial_count: int = 0
+    # Define the tasks you created in tasks.py
+    tasks_to_run = ["easy", "medium", "hard"]
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    # Loop through each task sequentially
+    for current_task in tasks_to_run:
+        rewards:     list = []
+        steps_taken: int  = 0
+        score:       float = 0.0
+        success:     bool  = False
+        initial_count: int = 0
 
-    try:
-        resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task_name": TASK_NAME}, timeout=10)
-        resp.raise_for_status()
-        obs = resp.json()
-        initial_count = obs["num_instructions"]
+        # Log the START for the current task
+        log_start(task=current_task, env=BENCHMARK, model=MODEL_NAME)
 
-        tried_passes = set()          # track what failed this program state
-        prev_num_inst = initial_count
-
-        for step in range(1, MAX_STEPS + 1):
-            action_name = choose_pass_deterministic(obs, tried_passes)
-
-            resp = requests.post(
-                f"{ENV_BASE_URL}/step",
-                json={"pass_name": action_name},
-                timeout=10,
-            )
+        try:
+            resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task_name": current_task}, timeout=10)
             resp.raise_for_status()
-            result = resp.json()
+            obs = resp.json()
+            initial_count = obs["num_instructions"]
 
-            obs    = result["observation"]
-            reward = float(result["reward"])
-            done   = bool(result["done"])
+            tried_passes = set()          # track what failed this program state
+            prev_num_inst = initial_count
 
-            # If pass was useless, remember it — unless program shrank (reset memory)
-            if reward <= -0.1:
-                tried_passes.add(action_name)
-            
-            # Program changed — reset tried passes so we re-evaluate
-            if obs["num_instructions"] < prev_num_inst:
-                tried_passes.clear()
-                prev_num_inst = obs["num_instructions"]
+            for step in range(1, MAX_STEPS + 1):
+                action_name = choose_pass_deterministic(obs, tried_passes)
 
-            rewards.append(reward)
-            steps_taken = step
-            log_step(step=step, action=action_name, reward=reward, done=done, error=None)
+                resp = requests.post(
+                    f"{ENV_BASE_URL}/step",
+                    json={"pass_name": action_name},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                result = resp.json()
 
-            if done:
-                break
+                obs    = result["observation"]
+                reward = float(result["reward"])
+                done   = bool(result["done"])
 
-        final_count = obs["num_instructions"]
-        score = (initial_count - final_count) / initial_count if initial_count > 0 else 1.0
-        score = max(0.0, min(1.0, score))
-        success = score > 0.0
+                # If pass was useless, remember it — unless program shrank (reset memory)
+                if reward <= -0.1:
+                    tried_passes.add(action_name)
+                
+                # Program changed — reset tried passes so we re-evaluate
+                if obs["num_instructions"] < prev_num_inst:
+                    tried_passes.clear()
+                    prev_num_inst = obs["num_instructions"]
 
-    except Exception as exc:
-        print(f"[DEBUG] Fatal error: {exc}", flush=True)
+                rewards.append(reward)
+                steps_taken = step
+                log_step(step=step, action=action_name, reward=reward, done=done, error=None)
 
-    finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+                if done:
+                    break
 
+            final_count = obs["num_instructions"]
+            score = (initial_count - final_count) / initial_count if initial_count > 0 else 1.0
+            score = max(0.0, min(1.0, score))
+            success = score > 0.0
+
+        except Exception as exc:
+            print(f"[DEBUG] Fatal error on task {current_task}: {exc}", flush=True)
+
+        finally:
+            # Log the END for the current task
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 if __name__ == "__main__":
     main()

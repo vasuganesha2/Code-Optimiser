@@ -1,32 +1,15 @@
 # env/tasks.py
 
-def default_grader(observation, reward, done):
-    """
-    Standard instruction reduction grader. 
-    Moved to top-level for validator visibility.
-    """
-    # Safeguard: Navigate to the actual instruction list
-    program_data = observation.get("program", {})
-    if isinstance(program_data, dict):
-        instructions = program_data.get("instructions", [])
-    else:
-        instructions = program_data
-        
-    # Get initial count from metadata or calculate from current list
-    initial = observation.get("initial_instructions", len(instructions))
-    final   = observation.get("num_instructions", len(instructions))
-    
-    if initial == 0:
-        return 0.0
-        
-    # Standard reduction formula
-    score = (initial - final) / initial
-    return max(0.0, float(score))
+from env.graders import grade
+
+# Small epsilon to keep scores strictly within (0,1)
+_EPSILON = 1e-9
 
 def get_tasks():
     """
-    Returns the required 3 tasks. 
-    The 'grader' key must point to the global function.
+    Returns 3 tasks, each with a grader.
+    Each grader captures the initial instruction count so
+    the score is computed correctly against the starting program.
     """
     return [
         {
@@ -37,7 +20,7 @@ def get_tasks():
                     {"op": "mul", "args": ["x", 2], "out": "y"},
                 ]
             },
-            "grader": default_grader,
+            "grader": grade(2),  # initial_count = number of instructions
         },
         {
             "name": "medium",
@@ -48,7 +31,7 @@ def get_tasks():
                     {"op": "mul", "args": ["x", 3], "out": "y"},
                 ]
             },
-            "grader": default_grader,
+            "grader": grade(3),
         },
         {
             "name": "hard",
@@ -62,6 +45,6 @@ def get_tasks():
                     {"op": "mul", "args": ["a", 3], "out": "y"},
                 ]
             },
-            "grader": default_grader,
+            "grader": grade(6),
         },
     ]
