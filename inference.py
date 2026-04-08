@@ -4,7 +4,6 @@ Follows OpenEnv stdout spec: [START], [STEP]*, [END]
 """
 
 import os
-import json
 import textwrap
 from typing import List, Optional
 from openai import OpenAI
@@ -43,7 +42,7 @@ SYSTEM_PROMPT = textwrap.dedent("""
       add [3,7]->x, mul[x,2]->y
       Step 1: const_fold  → const[10]->x, mul[x,2]->y   (x is now a known int)
       Step 2: const_fold  → const[10]->x, const[20]->y  (mul args are now all ints)
-      Step 3: dead_code_elim → const[20]->y              (x is never used, removed)
+      Step 3: dead_code_elim → const[20]->y             (x is never used, removed)
       Step 4: stop
 
     Reply with ONLY the pass name. One of: const_fold, dead_code_elim, noop, stop
@@ -123,51 +122,32 @@ def build_user_prompt(obs: dict, last_reward: float = 0.0) -> str:
         Which pass should be applied next?
     """).strip()
 
-def choose_pass_deterministic(obs: dict, failed: set) -> str:
-    instructions = obs.get("program", [])
 
-    # Build const map
-    const_map = {}
-    for inst in instructions:
-        if inst["op"] == "const" and isinstance(inst["args"][0], int):
-            const_map[inst["out"]] = inst["args"][0]
-
-    # All vars used as inputs
-    used_as_input = set()
-    for inst in instructions:
-        for arg in inst["args"]:
-            if isinstance(arg, str):
-                used_as_input.add(arg)
-
-    # Live output = last instruction's output (never remove it)
-    live_out = {instructions[-1]["out"]} if instructions else set()
-
-    # Rule 1: const_fold — only if there's a non-const op with ALL resolvable int args
-    can_fold = False
-    for inst in instructions:
-        if inst["op"] in ("const", "noop", "stop"):
-            continue
-        resolved = [
-            const_map[a] if isinstance(a, str) and a in const_map else a
-            for a in inst["args"]
-        ]
-        if all(isinstance(a, int) for a in resolved):
-            can_fold = True
-            break
-
-    if can_fold and "const_fold" not in failed:
-        return "const_fold"
-
-    # Rule 2: dead_code_elim — only if a non-live output is never used as input
-    can_dce = any(
-        inst["out"] not in used_as_input and inst["out"] not in live_out
-        for inst in instructions
-    )
-
-    if can_dce and "dead_code_elim" not in failed:
-        return "dead_code_elim"
-
-    # Nothing to do
+def choose_pass_llm(client: OpenAI, obs: dict, last_reward: float) -> str:
+    prompt = build_user_prompt(obs, last_reward)
+    
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=TEMPERATURE,
+            max_tokens=10,
+        )
+        
+        action = response.choices[0].message.content.strip().lower()
+        
+        for valid_pass in AVAILABLE_PASSES:
+            if valid_pass in action:
+                return valid_pass
+                
+    except Exception as e:
+        print(f"[DEBUG] LLM API Error: {e}", flush=True)
+        # Fallback logic if API fails so the script doesn't crash OpenEnv
+        return "stop"
+        
     return "stop"
 
 
@@ -190,9 +170,10 @@ def main() -> None:
 
         tried_passes = set()          # track what failed this program state
         prev_num_inst = initial_count
+        last_reward = 0.0             # Track reward for the prompt
 
         for step in range(1, MAX_STEPS + 1):
-            action_name = choose_pass_deterministic(obs, tried_passes)
+            action_name = choose_pass_llm(client, obs, last_reward)
 
             resp = requests.post(
                 f"{ENV_BASE_URL}/step",
@@ -205,6 +186,9 @@ def main() -> None:
             obs    = result["observation"]
             reward = float(result["reward"])
             done   = bool(result["done"])
+
+            # Update last_reward so the LLM knows if its action was useful on the next loop
+            last_reward = reward
 
             # If pass was useless, remember it — unless program shrank (reset memory)
             if reward <= -0.1:
