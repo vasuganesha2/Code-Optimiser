@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "compiler-optimization-env"
+version = "0.1.0"
+description = "A compiler optimization RL environment"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "pydantic>=2.0.0",
+    "requests>=2.28.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+server = "server.app:main"
