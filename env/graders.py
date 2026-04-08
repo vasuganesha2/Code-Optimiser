@@ -1,6 +1,10 @@
-def grade(initial_cost, final_cost):
-    if initial_cost == 0:
-        return 1.0
-    score = (initial_cost - final_cost) / initial_cost
-    return max(0.0, min(1.0, score))
+# env/graders.py
 
+def grade(initial_count, final_count):
+    """
+    Helper for local baseline testing.
+    """
+    if initial_count <= 0:
+        return 1.0 if final_count == 0 else 0.0
+    score = (initial_count - final_count) / initial_count
+    return max(0.0, min(1.0, float(score)))
