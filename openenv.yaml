@@ -3,9 +3,12 @@ version: "1.0.0"
 entry_point: serve:app
 
 tasks:
-  - easy
-  - medium
-  - hard
+  - name: easy
+    grader: env.graders.grade_easy
+  - name: medium
+    grader: env.graders.grade_medium
+  - name: hard
+    grader: env.graders.grade_hard
 
 endpoints:
   reset: /reset
