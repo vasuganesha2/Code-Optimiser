@@ -1,5 +1,20 @@
 from typing import List, Union, Optional, Dict, Any
 from pydantic import BaseModel, field_validator
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Set, Tuple
+
+@dataclass
+class BasicBlock:
+    label: str
+    insts: List[Dict[str, Any]]
+    succs: List[str] = field(default_factory=list)
+    preds: List[str] = field(default_factory=list)
+
+@dataclass
+class IRProgram:
+    entry: str
+    blocks: List[BasicBlock]
+
 
 
 class Instruction(BaseModel):

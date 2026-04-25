@@ -8,11 +8,17 @@ def grade(initial_count: int):
     Scores are clamped within (0,1) to satisfy HF validation.
     """
     def grader(observation, reward=None, done=None):
-        program_data = observation.get("program", [])
-        if isinstance(program_data, list):
-            final_count = len(program_data)
-        elif isinstance(program_data, dict):
-            final_count = len(program_data.get("instructions", []))
+        # Support both Pydantic Observation models and plain dicts
+        if hasattr(observation, "program"):
+            final_count = len(observation.program)
+        elif isinstance(observation, dict):
+            program_data = observation.get("program", [])
+            if isinstance(program_data, list):
+                final_count = len(program_data)
+            elif isinstance(program_data, dict):
+                final_count = len(program_data.get("instructions", []))
+            else:
+                final_count = initial_count
         else:
             final_count = initial_count
 
