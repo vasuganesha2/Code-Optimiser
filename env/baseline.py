@@ -42,7 +42,7 @@ def run_task(task):
 
     final_state = env.state()
     final_count = final_state["num_instructions"]
-    score = grade(initial_count, final_count)
+    score = grade(initial_count)(obs)
 
     return {
         **final_state,
