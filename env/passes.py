@@ -151,7 +151,6 @@ def const_fold(program: Dict[str, Any]) -> Dict[str, Any]:
     program["instructions"] = new_insts
     return program
 
-
 def dead_code_elim(program: Dict[str, Any]) -> Dict[str, Any]:
     """Eliminates instructions whose outputs are never used."""
     live = set()
@@ -161,29 +160,36 @@ def dead_code_elim(program: Dict[str, Any]) -> Dict[str, Any]:
     if not instructions:
         return program
 
+    # CRITICAL FIX 1: Seed the live set with the program's final output!
+    # This stops the baseline from deleting the very last variable.
+    for inst in reversed(instructions):
+        if inst.get("out") is not None:
+            live.add(inst.get("out"))
+            break
+
     # Traverse backward to determine liveness
     for inst in reversed(instructions):
         op, args, out = inst["op"], inst.get("args", []), inst.get("out")
 
-        # Terminators always stay; their args become live
-        if is_terminator(op):
-            new_insts.append(inst)
-            for arg in args:
-                if isinstance(arg, str): live.add(arg)
-            continue
+        # CRITICAL FIX 2: Explicitly protect memory writes and control flow!
+        is_protected = op in ["store", "branch", "jump", "jmp", "br", "cbr", "noop", "stop"]
 
-        # Keep instruction if it has side effects (not pure) or its output is live
-        if not is_pure(op) or (out and out in live):
+        # Keep instruction if it's protected, has side effects, or its output is live
+        if is_protected or not is_pure(op) or is_terminator(op) or (out and out in live):
             new_insts.append(inst)
+            
+            # Since we are keeping it, its output is now "defined", so remove it from live
             if out in live:
                 live.remove(out)
+            
+            # Since we are keeping it, its inputs are now "needed", so add them to live
             for arg in args:
-                if isinstance(arg, str): live.add(arg)
+                if isinstance(arg, str): 
+                    live.add(arg)
 
     new_insts.reverse()
     program["instructions"] = new_insts
     return program
-
 
 def local_cse(program: Dict[str, Any]) -> Dict[str, Any]:
     """Common Subexpression Elimination using normalization."""

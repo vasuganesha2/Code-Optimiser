@@ -10,6 +10,7 @@ from env.passes import (
     loop_invariant_code_motion,
     copy_prop,
     local_cse,
+    global_cse,
     lazy_code_motion # Algorithm 9.36
 )
 from env.ops import (
@@ -23,6 +24,7 @@ AVAILABLE_PASSES = {
     "code_motion": loop_invariant_code_motion,
     "copy_prop": copy_prop,
     "local_cse": local_cse,
+    "global_cse": global_cse,
     "lcm": lazy_code_motion,
     "stop": noop,
 }
