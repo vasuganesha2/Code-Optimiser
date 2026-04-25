@@ -6,23 +6,30 @@ from gymnasium import spaces
 from stable_baselines3 import PPO
 
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
-TASK_NAME = os.getenv("COMPILER_TASK", "easy")
+TASK_NAME = os.getenv("COMPILER_TASK", "easy_fold") # Try training on mixed!
 
 class HttpCompilerEnv(gym.Env):
     """
     A Gymnasium wrapper that talks to the OpenEnv FastAPI backend.
     """
-    def __init__(self, task_name="easy"):
+    def __init__(self, task_name="easy_fold"):
         super(HttpCompilerEnv, self).__init__()
         self.task_name = task_name
         
-        # Action Space: 4 discrete actions
-        self.actions = ["const_fold", "dead_code_elim", "noop", "stop"]
+        # Action Space: Upgraded to use all 8 advanced optimization passes
+        self.actions = [
+            "const_fold", 
+            "dead_code_elim", 
+            "code_motion", 
+            "copy_prop", 
+            "local_cse", 
+            "global_cse", 
+            "lcm", 
+            "stop"
+        ]
         self.action_space = spaces.Discrete(len(self.actions))
         
-        # Observation Space: A 4D vector representing:
-        # [num_instructions, steps_left, num_foldable_instructions, num_dead_variables]
-        # We use a Box space with generous upper bounds.
+        # Observation Space: [num_instructions, steps_left, num_foldable, num_dead]
         self.observation_space = spaces.Box(
             low=np.array([0, 0, 0, 0], dtype=np.float32),
             high=np.array([1000, 100, 1000, 1000], dtype=np.float32),
@@ -33,30 +40,34 @@ class HttpCompilerEnv(gym.Env):
         """Converts the dynamic JSON AST into a fixed numerical vector for the RL neural net."""
         num_inst = obs_json.get("num_instructions", 0)
         steps_left = obs_json.get("steps_left", 0)
-        
         instructions = obs_json.get("program", [])
+        
+        # Leverage the backend's new Data Flow Analysis directly!
+        live_vars = set(obs_json.get("live_vars", []))
+        
         used_inputs = set()
         for inst in instructions:
-            for arg in inst["args"]:
+            for arg in inst.get("args", []):
                 if isinstance(arg, str):
                     used_inputs.add(arg)
 
         num_foldable = 0
         num_dead = 0
         
-        # Count how many passes are currently viable
         for inst in instructions:
-            if inst["op"] not in ("const", "noop", "stop"):
-                if all(isinstance(a, int) for a in inst["args"]):
+            op = inst.get("op")
+            
+            # 1. Foldable: Pure math operations with all integer arguments
+            if op in {"add", "sub", "mul", "div", "mod", "shl", "shr", "and", "or", "xor"}:
+                if all(isinstance(a, int) for a in inst.get("args", [])):
                     num_foldable += 1
             
-            # If an output is never used as an input later, it's dead
-            if inst["out"] not in used_inputs:
-                num_dead += 1
-
-        # The last instruction's output is technically the "return" value, so let's not count it as dead
-        if instructions and instructions[-1]["out"] not in used_inputs:
-            num_dead = max(0, num_dead - 1)
+            # 2. Dead Code: Protect memory (store) and control flow (jmp, br)
+            if op not in {"store", "print", "call", "jmp", "br", "cbr", "ret", "stop", "noop"}:
+                out_var = inst.get("out")
+                # A variable is dead if it is never an input AND not protected by global liveness
+                if out_var is not None and out_var not in used_inputs and out_var not in live_vars:
+                    num_dead += 1
 
         return np.array([num_inst, steps_left, num_foldable, num_dead], dtype=np.float32)
 
@@ -67,7 +78,7 @@ class HttpCompilerEnv(gym.Env):
         
         obs_json = resp.json()
         obs = self._extract_features(obs_json)
-        return obs, {} # Gym expects (observation, info)
+        return obs, {} 
 
     def step(self, action_index):
         action_name = self.actions[action_index]
@@ -81,8 +92,6 @@ class HttpCompilerEnv(gym.Env):
         
         obs = self._extract_features(obs_json)
         
-        # In modern Gymnasium, 'done' is split into 'terminated' (goal reached/failed) 
-        # and 'truncated' (time limit exceeded). 
         terminated = done
         truncated = obs_json.get("steps_left", 1) <= 0
         
@@ -93,11 +102,10 @@ def main():
     env = HttpCompilerEnv(task_name=TASK_NAME)
     
     # Initialize Proximal Policy Optimization (PPO)
-    # PPO is a highly stable, state-of-the-art RL algorithm.
     model = PPO("MlpPolicy", env, verbose=1, learning_rate=0.001)
     
     print("Starting Training...")
-    # Train for 5,000 steps. Increase this to 50,000+ for harder tasks.
+    # 50,000 steps is great for the complex "mixed" task
     model.learn(total_timesteps=50000)
     
     print("Training Complete! Saving model to 'ppo_compiler_agent.zip'")

@@ -89,4 +89,30 @@ def get_tasks():
             ],
             "Already short; baseline should terminate quickly once no pass helps.",
         ),
+
+       _task(
+            "memory_basic",
+            [
+                {"op": "const", "args": [1024], "out": "ptr"},
+                {"op": "const", "args": [42], "out": "val"},
+                {"op": "store", "args": ["val", "ptr"], "out": None}, 
+                {"op": "load", "args": ["ptr"], "out": "x"},
+                {"op": "add", "args": ["x", 1], "out": "y"},
+                {"op": "id", "args": ["val"], "out": "final_result"} 
+            ],
+            "Store must be preserved. Load and add are dead and should be removed.",
+        ),
+
+        _task(
+            "memory_alias",
+            [
+                {"op": "const", "args": [2048], "out": "base"},
+                {"op": "add", "args": ["base", 4], "out": "addr"},
+                {"op": "const", "args": [99], "out": "data"},
+                {"op": "store", "args": ["data", "addr"], "out": None},
+                {"op": "add", "args": [5, 5], "out": "junk"},
+                {"op": "load", "args": ["addr"], "out": "result"},
+            ],
+            "Store is protected. Junk math is dead. Load is the final return.",
+        ),
     ]

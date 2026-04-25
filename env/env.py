@@ -102,16 +102,31 @@ class CompilerEnv:
     def _live_at_exit(self) -> List[Set[str]]:
         """Global backward liveness analysis."""
         n = len(self.program)
-        cfg = self._build_cfg()["edges"]
+        cfg = self._build_cfg()
+        edges = cfg["edges"]
+        exit_nodes = cfg["exit"]
+        
         in_sets = [set() for _ in range(n)]
         out_sets = [set() for _ in range(n)]
         
+        # SEED THE EXITS: The final output variable of the program is live!
+        final_out = None
+        for inst in reversed(self.program):
+            if inst.out:
+                final_out = inst.out
+                break
+                
         changed = True
         while changed:
             changed = False
             for i in reversed(range(n)):
                 inst = self.program[i]
-                new_out = set().union(*(in_sets[s] for s in cfg[i]))
+                new_out = set().union(*(in_sets[s] for s in edges[i]))
+                
+                # If this block is an exit, ensure the final output is kept live
+                if i in exit_nodes and final_out:
+                    new_out.add(final_out)
+                    
                 new_in = set(new_out)
                 if inst.out: new_in.discard(inst.out)
                 for arg in inst.args:
@@ -145,11 +160,12 @@ class CompilerEnv:
             return False
 
         if name == "const_fold":
-            # Simplified: checks if any math op has a constant argument
             consts = {i.out for i in self.program if i.op == "const"}
             for inst in self.program:
-                if is_math(inst.op) and any(a in consts for a in inst.args if isinstance(a, str)):
-                    return True
+                if is_math(inst.op) and inst.op != "const":
+                    # It is foldable if ALL args are either raw integers OR known const variables
+                    if all((isinstance(a, int) or a in consts) for a in inst.args):
+                        return True
             return False
 
         if name == "copy_prop":
@@ -158,8 +174,8 @@ class CompilerEnv:
             return not ids.isdisjoint(used)
 
         if name == "code_motion":
-            # Check for instructions where arguments are not defined in the same potential loop body
-            return True # Conservative guess for RL agents
+            # Only claim to be useful if there is actually control flow
+            return any(inst.op in {"jmp", "br", "cbr"} for inst in self.program)
 
         return False
 
