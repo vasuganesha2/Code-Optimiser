@@ -129,7 +129,54 @@ This forces the system to optimize compute and memory together, aligning RL beha
 </p>
 
 ---
+## Observation Space
 
+| Field              | Type              | Description                                  |
+|--------------------|-------------------|----------------------------------------------|
+| `num_instructions` | `int`             | Current number of instructions in the program |
+| `steps_left`       | `int`             | Remaining steps in the episode               |
+| `last_action`      | `str`             | Name of the most recently applied pass       |
+| `program`          | `List[Instruction]` | Full current instruction list              |
+
+Each `Instruction` has:
+- `op` — operation name (`add`, `mul`, `const`)
+- `args` — list of integer or variable-name arguments
+- `out` — output variable name
+
+---
+
+## Action Space
+
+| Action             | Effect |
+|--------------------|--------|
+| `const_fold`       | Replaces instructions with all-constant args with a single `const`. Also propagates known constant variables into dependent instructions before folding. |
+| `dead_code_elim`   | Removes instructions whose output is never used downstream, effectively cleaning up useless assignments and computations. |
+| `copy_prop`        | Replaces occurrences of variables with their assigned values if they are direct copies, reducing unnecessary variable tracking. |
+| `local_cse`        | Eliminates redundant computations within a single basic block by reusing previously calculated identical expressions. |
+| `global_cse`       | Extends Common Subexpression Elimination (CSE) across multiple basic blocks using global data-flow analysis. |
+| `code_motion`      | Moves loop-invariant computations outside of loops, ensuring they are executed only once rather than per-iteration. |
+| `lcm`              | Lazy Code Motion minimizes register pressure by strategically delaying computations as late as possible without causing redundancy. |
+| `store_load_fwd`   | Optimizes memory access by forwarding values directly from a store operation to subsequent load operations of the same address. |
+| `noop`             | No-op; valid but wastes a step (-0.05 reward). |
+| `stop`             | Ends the episode immediately; +1.0 bonus if nothing left to optimize, penalty if stopped early. |
+
+---
+
+## Reward Function
+
+```
+reward = (instructions_removed × 1.0)
+       - (0.2  if pass did nothing)
+       - (0.05 per step, always)
+```
+
+For `stop`:
+- `+1.0` if no further optimization is possible (clean termination)
+- `-0.2` if useful passes remain (premature stop)
+
+This gives a dense, shaped signal that rewards both optimization quality and efficiency (not wasting steps).
+
+---
 
 
 *(Note: If you want to see the detailed performance of the heuristic baseline agent across all test programs, you can run `python baseline.py` in your terminal.)*
