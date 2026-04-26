@@ -115,4 +115,51 @@ def get_tasks():
             ],
             "Store is protected. Junk math is dead. Load is the final return.",
         ),
+
+        _task(
+            "complex_cse",
+            [
+                {"op": "add", "args": ["a", "b"], "out": "x"},
+                {"op": "mul", "args": ["c", 10], "out": "y"},
+                {"op": "add", "args": ["a", "b"], "out": "z"}, # Redundant!
+                {"op": "mul", "args": ["c", 10], "out": "w"}, # Redundant!
+                {"op": "add", "args": ["z", "w"], "out": "res"},
+            ],
+            "Uses variables to prevent const_fold from 'masking' the CSE opportunity."
+        ),
+
+        _task(
+            "loop_hoist",
+            [
+                {"op": "const", "args": [0], "out": "i"},
+                {"op": "add", "args": ["a", "b"], "out": "invariant"}, # <--- Hoist this!
+                {"op": "add", "args": ["i", 1], "out": "i"},
+                {"op": "br", "args": [1, 4], "out": None}, # Simple loop back-edge
+                {"op": "ret", "args": ["invariant"], "out": None},
+            ],
+            "LICM should move the invariant addition outside the loop."
+        ),
+
+        _task(
+            "lcm_branch",
+            [
+                {"op": "br", "args": [1, 3], "out": None}, # If/Else
+                {"op": "add", "args": ["a", "b"], "out": "x"}, # Path A
+                {"op": "jmp", "args": [4], "out": None},
+                {"op": "add", "args": ["a", "b"], "out": "y"}, # Path B
+                {"op": "ret", "args": ["x"], "out": None},
+            ],
+            "LCM should hoist the 'add a, b' to the header before the branch."
+        ),
+
+        _task(
+            "global_dominance",
+            [
+                {"op": "add", "args": ["a", "b"], "out": "x"}, # Block 0 (Header)
+                {"op": "jmp", "args": [2], "out": None},
+                {"op": "add", "args": ["a", "b"], "out": "y"}, # Block 1 (Successor)
+                {"op": "ret", "args": ["y"], "out": None},
+            ],
+            "Global CSE should catch the redundant add because Block 0 dominates Block 1."
+        )
     ]
