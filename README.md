@@ -5,6 +5,7 @@
 [![Hugging Face Space](https://img.shields.io/badge/HuggingFace-Live_Demo-yellow?style=for-the-badge&logo=huggingface)](https://huggingface.co/spaces/vasuganesha1/meta1)
 
 [![Technical Blog](https://img.shields.io/badge/Blog-Coming_Soon-black?style=for-the-badge&logo=hashnode)](#)
+[![Reference Book](https://img.shields.io/badge/Reference-Compiler_Design_Book-darkgreen?style=for-the-badge&logo=book)](https://dpvipracollege.ac.in/wp-content/uploads/2023/01/Alfred-V.-Aho-Monica-S.-Lam-Ravi-Sethi-Jeffrey-D.-Ullman-Compilers-Principles-Techniques-and-Tools-Pearson_Addison-Wesley-2007.pdf)
 
 ## Overview
 **MetaMalloc** is a reinforcement learning–driven optimization engine designed to improve both compute efficiency and memory utilization in modern programs. Unlike traditional compilers that rely on fixed heuristics, MetaMalloc models optimization as a sequential decision-making problem, allowing it to adapt to different programs and execution patterns.
