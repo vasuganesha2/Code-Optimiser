@@ -12,8 +12,9 @@ def _task(name, instructions, description=""):
 
 def get_tasks():
     return [
+
         _task(
-            "easy_fold",
+            "constant_expression_query",
             [
                 {"op": "add", "args": [3, 7], "out": "x"},
                 {"op": "mul", "args": ["x", 2], "out": "y"},
@@ -21,11 +22,11 @@ def get_tasks():
                 {"op": "mul", "args": ["z", 3], "out": "w"},
                 {"op": "add", "args": ["y", "w"], "out": "t"},
             ],
-            "Constant folding and chained simplification.",
+            "Simplify constant expressions in query predicates to reduce execution cost.",
         ),
 
         _task(
-            "copy_chain",
+            "projection_simplification",
             [
                 {"op": "const", "args": [5], "out": "a"},
                 {"op": "id", "args": ["a"], "out": "b"},
@@ -34,11 +35,11 @@ def get_tasks():
                 {"op": "add", "args": ["a", 3], "out": "e"},
                 {"op": "mul", "args": ["d", 2], "out": "f"},
             ],
-            "Copy propagation should collapse the chain and expose folds.",
+            "Eliminate redundant column mappings and simplify projections.",
         ),
 
         _task(
-            "local_cse",
+            "subquery_reuse_local",
             [
                 {"op": "add", "args": [1, 2], "out": "x"},
                 {"op": "add", "args": [1, 2], "out": "y"},
@@ -46,11 +47,11 @@ def get_tasks():
                 {"op": "mul", "args": ["y", 4], "out": "u"},
                 {"op": "add", "args": ["z", "u"], "out": "v"},
             ],
-            "Repeated expressions should be reused by local CSE.",
+            "Detect and reuse identical sub-expressions within a query block.",
         ),
 
         _task(
-            "dead_code",
+            "unused_projection_elimination",
             [
                 {"op": "const", "args": [9], "out": "a"},
                 {"op": "const", "args": [1], "out": "b"},
@@ -60,11 +61,11 @@ def get_tasks():
                 {"op": "mul", "args": [7, 8], "out": "junk2"},
                 {"op": "add", "args": ["d", 0], "out": "res"},
             ],
-            "Dead code elimination should remove unused junk instructions.",
+            "Remove unused computations and redundant projections.",
         ),
 
         _task(
-            "mixed",
+            "complex_query_optimization",
             [
                 {"op": "const", "args": [2], "out": "a"},
                 {"op": "id", "args": ["a"], "out": "b"},
@@ -77,34 +78,34 @@ def get_tasks():
                 {"op": "add", "args": [100, 200], "out": "unused1"},
                 {"op": "mul", "args": [10, 10], "out": "unused2"},
             ],
-            "A mix of folding, copy propagation, CSE, and DCE.",
+            "Mixed workload involving folding, reuse, and pruning optimizations.",
         ),
 
         _task(
-            "stop_case",
+            "already_optimized_query",
             [
                 {"op": "const", "args": [1], "out": "x"},
                 {"op": "add", "args": ["x", 2], "out": "y"},
                 {"op": "mul", "args": ["y", 3], "out": "z"},
             ],
-            "Already short; baseline should terminate quickly once no pass helps.",
-        ),
-
-       _task(
-            "memory_basic",
-            [
-                {"op": "const", "args": [1024], "out": "ptr"},
-                {"op": "const", "args": [42], "out": "val"},
-                {"op": "store", "args": ["val", "ptr"], "out": None}, 
-                {"op": "load", "args": ["ptr"], "out": "x"},
-                {"op": "add", "args": ["x", 1], "out": "y"},
-                {"op": "id", "args": ["val"], "out": "final_result"} 
-            ],
-            "Store must be preserved. Load and add are dead and should be removed.",
+            "Query is already efficient; optimizer should terminate early.",
         ),
 
         _task(
-            "memory_alias",
+            "table_write_read_cleanup",
+            [
+                {"op": "const", "args": [1024], "out": "ptr"},
+                {"op": "const", "args": [42], "out": "val"},
+                {"op": "store", "args": ["val", "ptr"], "out": None},
+                {"op": "load", "args": ["ptr"], "out": "x"},
+                {"op": "add", "args": ["x", 1], "out": "y"},
+                {"op": "id", "args": ["val"], "out": "final_result"},
+            ],
+            "Remove unnecessary reads after writes while preserving data correctness.",
+        ),
+
+        _task(
+            "index_aliasing_case",
             [
                 {"op": "const", "args": [2048], "out": "base"},
                 {"op": "add", "args": ["base", 4], "out": "addr"},
@@ -113,53 +114,18 @@ def get_tasks():
                 {"op": "add", "args": [5, 5], "out": "junk"},
                 {"op": "load", "args": ["addr"], "out": "result"},
             ],
-            "Store is protected. Junk math is dead. Load is the final return.",
+            "Ensure correctness under pointer/index aliasing while pruning unused ops.",
         ),
 
         _task(
-            "complex_cse",
+            "cross_expression_reuse",
             [
                 {"op": "add", "args": ["a", "b"], "out": "x"},
                 {"op": "mul", "args": ["c", 10], "out": "y"},
-                {"op": "add", "args": ["a", "b"], "out": "z"}, # Redundant!
-                {"op": "mul", "args": ["c", 10], "out": "w"}, # Redundant!
+                {"op": "add", "args": ["a", "b"], "out": "z"},
+                {"op": "mul", "args": ["c", 10], "out": "w"},
                 {"op": "add", "args": ["z", "w"], "out": "res"},
             ],
-            "Uses variables to prevent const_fold from 'masking' the CSE opportunity."
-        ),
-
-        _task(
-            "loop_hoist",
-            [
-                {"op": "const", "args": [0], "out": "i"},
-                {"op": "add", "args": ["a", "b"], "out": "invariant"}, # <--- Hoist this!
-                {"op": "add", "args": ["i", 1], "out": "i"},
-                {"op": "br", "args": [1, 4], "out": None}, # Simple loop back-edge
-                {"op": "ret", "args": ["invariant"], "out": None},
-            ],
-            "LICM should move the invariant addition outside the loop."
-        ),
-
-        _task(
-            "lcm_branch",
-            [
-                {"op": "br", "args": [1, 3], "out": None}, # If/Else
-                {"op": "add", "args": ["a", "b"], "out": "x"}, # Path A
-                {"op": "jmp", "args": [4], "out": None},
-                {"op": "add", "args": ["a", "b"], "out": "y"}, # Path B
-                {"op": "ret", "args": ["x"], "out": None},
-            ],
-            "LCM should hoist the 'add a, b' to the header before the branch."
-        ),
-
-        _task(
-            "global_dominance",
-            [
-                {"op": "add", "args": ["a", "b"], "out": "x"}, # Block 0 (Header)
-                {"op": "jmp", "args": [2], "out": None},
-                {"op": "add", "args": ["a", "b"], "out": "y"}, # Block 1 (Successor)
-                {"op": "ret", "args": ["y"], "out": None},
-            ],
-            "Global CSE should catch the redundant add because Block 0 dominates Block 1."
+            "Identify repeated expressions across the query and reuse them.",
         )
     ]

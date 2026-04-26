@@ -1,12 +1,10 @@
 from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
-
 if TYPE_CHECKING:
     from env.models import IRProgram
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Primitive helpers (duplicated here so passes.py is self-contained)
 # ──────────────────────────────────────────────────────────────────────────────
-
 _MATH_OPS: Set[str] = {
     "add", "sub", "mul", "div", "mod", "neg",
     "and", "or", "xor", "not", "shl", "shr",
@@ -20,22 +18,17 @@ _COMMUTATIVE_OPS: Set[str] = {"add", "mul", "and", "or", "xor", "eq", "ne"}
 def is_math(op: str) -> bool:
     return op in _MATH_OPS
 
-
 def is_terminator(op: str) -> bool:
     return op in _TERMINATOR_OPS
-
 
 def is_pure(op: str) -> bool:
     return op not in _SIDE_EFFECT_OPS
 
-
 def is_constant(op: str, args: List[Any]) -> bool:
     return op == "const" and len(args) == 1 and isinstance(args[0], (int, float))
 
-
 def can_fold(op: str, args: List[Any]) -> bool:
     return is_math(op) and all(isinstance(a, (int, float)) for a in args)
-
 
 def evaluate(op: str, args: List[Any]) -> Optional[Any]:
     try:
@@ -63,7 +56,6 @@ def evaluate(op: str, args: List[Any]) -> Optional[Any]:
         return None
     return None
 
-
 def normalize(op: str, args: List[Any]) -> Tuple:
     str_args = [str(a) for a in args]
     if op in _COMMUTATIVE_OPS:
@@ -74,14 +66,12 @@ def normalize(op: str, args: List[Any]) -> Tuple:
 # ──────────────────────────────────────────────────────────────────────────────
 # Data-Flow Helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
 def _build_graph(
     instructions: List[Dict[str, Any]]
 ) -> Tuple[Dict[int, List[int]], Dict[int, List[int]]]:
     n = len(instructions)
     succs: Dict[int, List[int]] = {i: [] for i in range(n)}
     preds: Dict[int, List[int]] = {i: [] for i in range(n)}
-
     for i, inst in enumerate(instructions):
         op = inst["op"]
         if op in {"ret", "return", "stop"}:
@@ -115,19 +105,16 @@ def _reaching_definitions(
     OUT = [set() for _ in range(n)]
     GEN = [set() for _ in range(n)]
     KILL = [set() for _ in range(n)]
-
     def_locs: Dict[str, Set[int]] = {}
     for i, inst in enumerate(instructions):
         v = inst.get("out")
         if v:
             def_locs.setdefault(v, set()).add(i)
-
     for i, inst in enumerate(instructions):
         v = inst.get("out")
         if v:
             GEN[i].add((v, i))
             KILL[i] = {(v, loc) for loc in def_locs[v] if loc != i}
-
     changed = True
     while changed:
         changed = False
@@ -146,141 +133,207 @@ def _reaching_definitions(
 # ──────────────────────────────────────────────────────────────────────────────
 # Optimization Passes
 # ──────────────────────────────────────────────────────────────────────────────
-
 def loop_invariant_code_motion(program: List[Any]) -> List[Any]:
-    """Identifies loops via back-edges and hoists loop-invariant instructions."""
-    insts = [i.model_dump() if hasattr(i, "model_dump") else i for i in program]
+    """
+    Flat-list LICM heuristic:
+    - detect back-edges
+    - find pure math instructions in the loop whose operands are not defined in the loop
+    - move them before the loop header
+    """
+    insts = [
+        i.model_dump() if hasattr(i, "model_dump") else dict(i)
+        for i in program
+    ]
     if not insts:
         return program
 
+    # Collect back-edges as (header, tail)
     loops = []
     for idx, inst in enumerate(insts):
         op = inst.get("op")
         args = inst.get("args", [])
-        if op in {"jmp", "br", "cbr"}:
-            for arg in args:
-                if isinstance(arg, int) and arg <= idx:
-                    loops.append((arg, idx))
+        if op == "jmp":
+            if args and isinstance(args[0], int) and args[0] < idx:
+                loops.append((args[0], idx))
+        elif op in {"br", "cbr"}:
+            for tgt in args[:2]:
+                if isinstance(tgt, int) and tgt < idx:
+                    loops.append((tgt, idx))
 
     if not loops:
         return program
 
-    new_insts = list(insts)
+    # Process inner/later loops first so index shifts do not break earlier ones.
+    loops = sorted(set(loops), key=lambda x: (x[0], x[1]), reverse=True)
+
     for header, tail in loops:
+        if header < 0 or tail >= len(insts) or header >= tail:
+            continue
+
         loop_indices = list(range(header, tail + 1))
+
+        # Values defined anywhere inside the loop
         defs_in_loop = {
-            new_insts[i].get("out")
+            insts[i].get("out")
             for i in loop_indices
-            if new_insts[i].get("out")
+            if insts[i].get("out") is not None
         }
 
-        invariants_to_hoist = []
+        movable_indices = []
         for i in loop_indices:
-            inst = new_insts[i]
-            op, args, out = inst.get("op"), inst.get("args", []), inst.get("out")
-            if (
-                is_pure(op) and is_math(op) and out
-                and all(a not in defs_in_loop for a in args if isinstance(a, str))
-            ):
-                invariants_to_hoist.append(i)
+            inst = insts[i]
+            op = inst.get("op")
+            args = inst.get("args", [])
+            out = inst.get("out")
 
-        current_header = header
-        for i in reversed(invariants_to_hoist):
-            moving_inst = new_insts.pop(i)
-            new_insts.insert(current_header, moving_inst)
-            current_header += 1
+            # Do not move control flow or side-effecting ops
+            if not out:
+                continue
+            if not is_pure(op) or not is_math(op):
+                continue
+            if is_terminator(op):
+                continue
+
+            # Only hoist if every variable operand comes from outside the loop
+            invariant = True
+            for a in args:
+                if isinstance(a, str) and a in defs_in_loop:
+                    invariant = False
+                    break
+
+            if invariant:
+                movable_indices.append(i)
+
+        if not movable_indices:
+            continue
+
+        movable_set = set(movable_indices)
+
+        # Preserve original order of hoisted instructions
+        hoisted = [insts[i] for i in movable_indices]
+        remaining = [inst for i, inst in enumerate(insts) if i not in movable_set]
+
+        # Insert hoisted instructions just before the original loop header
+        insert_pos = sum(1 for i in range(header) if i not in movable_set)
+        insts = remaining[:insert_pos] + hoisted + remaining[insert_pos:]
 
     from env.models import Instruction
-    return [Instruction(**i) for i in new_insts]
+    return [Instruction(**i) for i in insts]
+
+
+# Make sure the pipeline can find it
+code_motion = loop_invariant_code_motion
 
 
 def copy_prop(program: Dict[str, Any]) -> Dict[str, Any]:
-    """Global Copy Propagation using Reaching Definitions."""
+    """
+    Global copy propagation using reaching definitions.
+
+    Safe rule:
+    replace a variable use v with source s only when all reaching
+    definitions of v are copies of the same source s.
+    """
     insts = program.get("instructions", [])
     if not insts:
         return program
 
     succs, preds = _build_graph(insts)
-    IN_sets = _reaching_definitions(insts, succs, preds)
+    in_sets = _reaching_definitions(insts, succs, preds)
 
-    new_insts = []
+    new_insts: List[Dict[str, Any]] = []
+
     for i, inst in enumerate(insts):
-        args = inst.get("args", [])
-        new_args = list(args)
+        args = list(inst.get("args", []))
+        new_args = args[:]
 
-        for arg_idx, arg in enumerate(args):
-            if isinstance(arg, str):
-                reaching_defs = [
-                    loc for var, loc in IN_sets[i] if var == arg
-                ]
-                if reaching_defs:
-                    propagate_var = None
-                    can_propagate = True
-                    for loc in reaching_defs:
-                        def_inst = insts[loc]
-                        if (
-                            def_inst["op"] == "id"
-                            and len(def_inst["args"]) == 1
-                            and isinstance(def_inst["args"][0], str)
-                        ):
-                            if propagate_var is None:
-                                propagate_var = def_inst["args"][0]
-                            elif propagate_var != def_inst["args"][0]:
-                                can_propagate = False
-                                break
-                        else:
-                            can_propagate = False
-                            break
-                    if can_propagate and propagate_var:
-                        new_args[arg_idx] = propagate_var
+        for j, arg in enumerate(args):
+            if not isinstance(arg, str):
+                continue
+
+            reaching_defs = [loc for var, loc in in_sets[i] if var == arg]
+            if not reaching_defs:
+                continue
+
+            source_var: Optional[str] = None
+            safe = True
+
+            for loc in reaching_defs:
+                def_inst = insts[loc]
+
+                # Only propagate through `id x -> y`
+                if def_inst.get("op") != "id":
+                    safe = False
+                    break
+
+                def_args = def_inst.get("args", [])
+                if len(def_args) != 1 or not isinstance(def_args[0], str):
+                    safe = False
+                    break
+
+                src = def_args[0]
+                if source_var is None:
+                    source_var = src
+                elif source_var != src:
+                    safe = False
+                    break
+
+            if safe and source_var is not None:
+                new_args[j] = source_var
 
         new_insts.append({**inst, "args": new_args})
 
     program["instructions"] = new_insts
     return program
 
+# copy_propagation = copy_prop
+
 
 def const_fold(program: Dict[str, Any]) -> Dict[str, Any]:
-    """Global Constant Folding using Reaching Definitions."""
+    """Global constant folding using reaching definitions."""
     insts = program.get("instructions", [])
     if not insts:
         return program
 
     succs, preds = _build_graph(insts)
-    IN_sets = _reaching_definitions(insts, succs, preds)
+    in_sets = _reaching_definitions(insts, succs, preds)
 
-    new_insts = []
+    def get_reaching_const(var: str, i: int) -> Optional[float]:
+        reaching_defs = [loc for v, loc in in_sets[i] if v == var]
+        if not reaching_defs:
+            return None
+
+        value: Optional[float] = None
+        for loc in reaching_defs:
+            def_inst = insts[loc]
+            if def_inst.get("op") != "const":
+                return None
+            def_args = def_inst.get("args", [])
+            if len(def_args) != 1 or not isinstance(def_args[0], (int, float)):
+                return None
+
+            v = def_args[0]
+            if value is None:
+                value = v
+            elif value != v:
+                return None
+
+        return value
+
+    new_insts: List[Dict[str, Any]] = []
+
     for i, inst in enumerate(insts):
-        op, args, out = inst["op"], inst.get("args", []), inst.get("out")
+        op = inst.get("op")
+        args = list(inst.get("args", []))
+        out = inst.get("out")
+
         new_args = list(args)
-
-        for arg_idx, arg in enumerate(args):
+        for j, arg in enumerate(args):
             if isinstance(arg, str):
-                reaching_defs = [
-                    loc for var, loc in IN_sets[i] if var == arg
-                ]
-                if reaching_defs:
-                    propagate_val = None
-                    can_propagate = True
-                    for loc in reaching_defs:
-                        def_inst = insts[loc]
-                        if (
-                            def_inst["op"] == "const"
-                            and len(def_inst["args"]) == 1
-                            and isinstance(def_inst["args"][0], (int, float))
-                        ):
-                            if propagate_val is None:
-                                propagate_val = def_inst["args"][0]
-                            elif propagate_val != def_inst["args"][0]:
-                                can_propagate = False
-                                break
-                        else:
-                            can_propagate = False
-                            break
-                    if can_propagate and propagate_val is not None:
-                        new_args[arg_idx] = propagate_val
+                const_val = get_reaching_const(arg, i)
+                if const_val is not None:
+                    new_args[j] = const_val
 
-        if can_fold(op, new_args) and out:
+        if out is not None and can_fold(op, new_args):
             result = evaluate(op, new_args)
             if result is not None:
                 new_insts.append({"op": "const", "args": [result], "out": out})
@@ -291,134 +344,140 @@ def const_fold(program: Dict[str, Any]) -> Dict[str, Any]:
     program["instructions"] = new_insts
     return program
 
-
 def dead_code_elim(program: Dict[str, Any]) -> Dict[str, Any]:
-    """Global Dead Code Elimination using Liveness Analysis."""
+    """Global dead code elimination using backward liveness analysis."""
     insts = program.get("instructions", [])
     if not insts:
         return program
 
     n = len(insts)
     succs, preds = _build_graph(insts)
-    exit_nodes = {i for i in range(n) if not succs[i]}
 
-    # BUG FIX #3: Seed the final output variable as live at program exits,
-    # otherwise the last computed value is incorrectly eliminated.
-    final_out: Optional[str] = None
-    for inst in reversed(insts):
-        if inst.get("out"):
-            final_out = inst["out"]
-            break
-
-    IN:  List[Set[str]] = [set() for _ in range(n)]
+    IN: List[Set[str]] = [set() for _ in range(n)]
     OUT: List[Set[str]] = [set() for _ in range(n)]
 
     changed = True
     while changed:
         changed = False
+
         for i in reversed(range(n)):
             inst = insts[i]
 
             new_out: Set[str] = set()
             for s in succs[i]:
                 new_out.update(IN[s])
-            # Seed exits with the program's final output
-            if i in exit_nodes and final_out:
-                new_out.add(final_out)
-            OUT[i] = new_out
 
-            new_in = set(OUT[i])
+            new_in = set(new_out)
+
             out_var = inst.get("out")
-            if out_var:
+            if out_var is not None:
                 new_in.discard(out_var)
+
             for arg in inst.get("args", []):
                 if isinstance(arg, str):
                     new_in.add(arg)
 
-            if IN[i] != new_in:
+            if new_in != IN[i] or new_out != OUT[i]:
                 IN[i] = new_in
+                OUT[i] = new_out
                 changed = True
 
     new_insts = []
     for i, inst in enumerate(insts):
-        op, out = inst["op"], inst.get("out")
-        if is_terminator(op) or not is_pure(op) or (out and out in OUT[i]):
+        op = inst["op"]
+        out = inst.get("out")
+
+        # Keep side-effecting ops and terminators.
+        # Keep pure ops only if their result is live.
+        if is_terminator(op) or not is_pure(op) or (out is not None and out in OUT[i]):
             new_insts.append(inst)
 
     program["instructions"] = new_insts
     return program
 
 
-# ── CSE helpers ───────────────────────────────────────────────────────────────
 
+# ── CSE helpers ───────────────────────────────────────────────────────────────
 def _available_expressions(
     instructions: List[Dict[str, Any]],
     succs: Dict[int, List[int]],
     preds: Dict[int, List[int]],
 ) -> List[Dict[Any, str]]:
-    """
-    Computes Global Available Expressions (intersection-based).
-    Returns, for each instruction index i, a dict mapping expression_key
-    to the variable that holds its result at the entry of i.
-    """
     n = len(instructions)
+
+    # Collect all expressions
     all_exprs: Dict[Tuple, Set[int]] = {}
     for i, inst in enumerate(instructions):
         if is_math(inst["op"]) and is_pure(inst["op"]):
             key = normalize(inst["op"], inst.get("args", []))
             all_exprs.setdefault(key, set()).add(i)
 
-    GEN: List[Optional[Tuple]] = [None] * n
-    KILL: List[Set[Tuple]] = [set() for _ in range(n)]
+    # GEN / KILL
+    GEN = [set() for _ in range(n)]
+    KILL = [set() for _ in range(n)]
 
     for i, inst in enumerate(instructions):
         if is_math(inst["op"]) and is_pure(inst["op"]):
-            GEN[i] = normalize(inst["op"], inst.get("args", []))
+            key = normalize(inst["op"], inst.get("args", []))
+            GEN[i].add(key)
 
         out_var = inst.get("out")
         if out_var:
-            for expr_key in all_exprs:
-                # BUG FIX #1: expr_key[1] is a single string — using `in` on a
-                # string gives a substring match, not element membership.
-                # expr_key[1:] is a tuple, so `in` correctly tests membership.
-                if out_var in expr_key[1:]:
-                    KILL[i].add(expr_key)
+            for expr in all_exprs:
+                if out_var in expr[1:]:
+                    KILL[i].add(expr)
 
     universe = set(all_exprs.keys())
-    OUT = [set(universe) for _ in range(n)]
+
+    IN = [set(universe) for _ in range(n)]
+    OUT = [set() for _ in range(n)]
+
+    # Entry node has empty IN
     if n > 0:
-        OUT[0] = set()
+        IN[0] = set()
 
     changed = True
     while changed:
         changed = False
         for i in range(n):
-            if not preds[i]:
-                new_in: Set = set()
-            else:
+            # IN[i] = intersection of OUT[pred]
+            if preds[i]:
                 new_in = set.intersection(*(OUT[p] for p in preds[i]))
+            else:
+                new_in = set()
 
-            temp_out = new_in - KILL[i]
-            if GEN[i]:
-                temp_out.add(GEN[i])
+            # OUT[i] = GEN[i] ∪ (IN[i] - KILL[i])
+            new_out = GEN[i] | (new_in - KILL[i])
 
-            if OUT[i] != temp_out:
-                OUT[i] = temp_out
+            if new_in != IN[i] or new_out != OUT[i]:
+                IN[i] = new_in
+                OUT[i] = new_out
                 changed = True
 
+    # Build mapping: expression → variable (ONLY from dominating defs)
     results: List[Dict[Any, str]] = []
+
     for i in range(n):
         expr_to_var: Dict[Any, str] = {}
-        for expr in OUT[i]:
-            for loc in all_exprs[expr]:
-                if loc < i:
-                    expr_to_var[expr] = instructions[loc]["out"]
+
+        for expr in IN[i]:  # IMPORTANT: use IN, not OUT
+            # find nearest dominating definition
+            for j in reversed(range(i)):
+                inst = instructions[j]
+                if (
+                    is_math(inst["op"])
+                    and is_pure(inst["op"])
+                    and normalize(inst["op"], inst.get("args", [])) == expr
+                ):
+                    expr_to_var[expr] = inst["out"]
+                    break
+
         results.append(expr_to_var)
+
     return results
 
 
 def local_cse(program: Dict[str, Any]) -> Dict[str, Any]:
-    """Global Common Subexpression Elimination (via available-expressions analysis)."""
     insts = program.get("instructions", [])
     if not insts:
         return program
@@ -427,14 +486,104 @@ def local_cse(program: Dict[str, Any]) -> Dict[str, Any]:
     available_in = _available_expressions(insts, succs, preds)
 
     new_insts = []
+
     for i, inst in enumerate(insts):
         op, args, out = inst["op"], inst.get("args", []), inst.get("out")
 
         if is_math(op) and is_pure(op):
             expr_key = normalize(op, args)
+
             if expr_key in available_in[i]:
                 prev_var = available_in[i][expr_key]
-                new_insts.append({"op": "id", "args": [prev_var], "out": out})
+
+                # avoid self-replacement
+                if prev_var != out:
+                    new_insts.append({
+                        "op": "id",
+                        "args": [prev_var],
+                        "out": out
+                    })
+                    continue
+
+        new_insts.append(inst)
+
+    program["instructions"] = new_insts
+    return program
+
+
+# local_cse already implements a global analysis; alias for compatibility
+global_cse = local_cse
+
+
+# ── Store / Load passes ───────────────────────────────────────────────────────
+def store_load_fwd(program: Dict[str, Any]) -> Dict[str, Any]:
+    insts = program.get("instructions", [])
+    if not insts:
+        return program
+
+    n = len(insts)
+    succs, preds = _build_graph(insts)
+
+    # Dataflow: map ptr -> value
+    IN = [dict() for _ in range(n)]
+    OUT = [dict() for _ in range(n)]
+
+    def meet(maps):
+        """Intersection: keep only same ptr->val in all predecessors"""
+        if not maps:
+            return {}
+        keys = set(maps[0].keys())
+        for m in maps[1:]:
+            keys &= set(m.keys())
+
+        result = {}
+        for k in keys:
+            vals = {m[k] for m in maps}
+            if len(vals) == 1:
+                result[k] = vals.pop()
+        return result
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n):
+            # IN = meet of predecessors
+            new_in = meet([OUT[p] for p in preds[i]]) if preds[i] else {}
+
+            # transfer
+            new_out = dict(new_in)
+            inst = insts[i]
+            op, args = inst["op"], inst.get("args", [])
+
+            if op == "store" and len(args) == 2:
+                val, ptr = args
+                new_out[ptr] = val
+
+            elif op == "load":
+                pass  # no change
+
+            else:
+                # unknown op → may touch memory
+                new_out.clear()
+
+            if new_in != IN[i] or new_out != OUT[i]:
+                IN[i] = new_in
+                OUT[i] = new_out
+                changed = True
+
+    # Rewrite
+    new_insts = []
+    for i, inst in enumerate(insts):
+        op, args, out = inst["op"], inst.get("args", []), inst.get("out")
+
+        if op == "load" and len(args) == 1:
+            ptr = args[0]
+            if ptr in IN[i]:
+                new_insts.append({
+                    "op": "id",
+                    "args": [IN[i][ptr]],
+                    "out": out
+                })
                 continue
 
         new_insts.append(inst)
@@ -443,87 +592,70 @@ def local_cse(program: Dict[str, Any]) -> Dict[str, Any]:
     return program
 
 
-# BUG FIX #4a: global_cse is imported by env.py but was never defined.
-# local_cse was already upgraded to a global analysis, so we simply alias it.
-global_cse = local_cse
-
-
-# ── Store / Load passes ───────────────────────────────────────────────────────
-
-def store_load_fwd(program: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Store-to-Load Forwarding.
-    When a load reads from a pointer that was most recently stored to (with no
-    intervening aliasing stores), replace the load with an `id` of the stored value.
-    """
-    insts = program.get("instructions", [])
-    if not insts:
-        return program
-
-    store_map: Dict[Any, Any] = {}   # ptr -> value-variable
-    new_insts = []
-
-    for inst in insts:
-        op, args, out = inst["op"], inst.get("args", []), inst.get("out")
-
-        if op == "store" and len(args) == 2:
-            val, ptr = args[0], args[1]
-            store_map[ptr] = val
-            new_insts.append(inst)
-        elif op == "load" and len(args) == 1:
-            ptr = args[0]
-            if ptr in store_map:
-                # Forward stored value; the load instruction is replaced.
-                new_insts.append({"op": "id", "args": [store_map[ptr]], "out": out})
-            else:
-                new_insts.append(inst)
-        else:
-            # Conservative: any unrecognised store clears the cache entirely.
-            if op == "store":
-                store_map.clear()
-            new_insts.append(inst)
-
-    program["instructions"] = new_insts
-    return program
-
-
 def dead_store_elim(program: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Dead Store Elimination.
-    A store to pointer P is dead if P is stored to again before any intervening
-    load from P.  We make a single forward pass tracking the last store index
-    for each pointer and mark the earlier one dead when a second store is seen.
-    """
     insts = program.get("instructions", [])
     if not insts:
         return program
 
-    last_store: Dict[Any, int] = {}   # ptr -> instruction index of last store
-    dead: Set[int] = set()
+    n = len(insts)
+    succs, preds = _build_graph(insts)
 
+    # LIVE[i] = set of pointers whose value may be used after i
+    IN = [set() for _ in range(n)]
+    OUT = [set() for _ in range(n)]
+
+    changed = True
+    while changed:
+        changed = False
+        for i in reversed(range(n)):
+            # OUT = union of successors
+            new_out = set()
+            for s in succs[i]:
+                new_out |= IN[s]
+
+            inst = insts[i]
+            op, args = inst["op"], inst.get("args", [])
+
+            new_in = set(new_out)
+
+            if op == "load" and args:
+                new_in.add(args[0])  # ptr becomes live
+
+            elif op == "store" and len(args) == 2:
+                _, ptr = args
+                # store kills previous value
+                new_in.discard(ptr)
+
+            else:
+                # unknown op → assume all memory may be used
+                new_in = set(new_out)
+
+            if new_in != IN[i] or new_out != OUT[i]:
+                IN[i] = new_in
+                OUT[i] = new_out
+                changed = True
+
+    # Remove dead stores
+    new_insts = []
     for i, inst in enumerate(insts):
         op, args = inst["op"], inst.get("args", [])
 
-        if op == "load" and args:
-            # A load keeps the previous store alive.
-            last_store.pop(args[0], None)
-        elif op == "store" and len(args) == 2:
-            _val, ptr = args[0], args[1]
-            if ptr in last_store:
-                dead.add(last_store[ptr])   # previous store to same ptr is dead
-            last_store[ptr] = i
+        if op == "store" and len(args) == 2:
+            _, ptr = args
+            if ptr not in OUT[i]:
+                continue  # dead store → remove
 
-    new_insts = [inst for i, inst in enumerate(insts) if i not in dead]
+        new_insts.append(inst)
+
     program["instructions"] = new_insts
     return program
 
 
 # ── Lazy Code Motion (Algorithm 9.36) ────────────────────────────────────────
-
 def _partial_redundancy_elimination(program: Dict[str, Any]) -> Dict[str, Any]:
     """
     Full implementation of Algorithm 9.36: Lazy Code Motion.
-    Operates on a flat instruction dict (same interface as the other passes).
+    Operates on a flat instruction list.
     """
     insts = program.get("instructions", [])
     if not insts:
@@ -533,156 +665,156 @@ def _partial_redundancy_elimination(program: Dict[str, Any]) -> Dict[str, Any]:
 
     # Step 1: Collect universe U, e_use, e_kill
     U: Set[Tuple] = set()
-    e_use:  List[Set[Tuple]] = [set() for _ in range(n)]
+    e_use: List[Set[Tuple]] = [set() for _ in range(n)]
     e_kill: List[Set[Tuple]] = [set() for _ in range(n)]
-
     for i, inst in enumerate(insts):
         op, args, out = inst["op"], inst.get("args", []), inst.get("out")
         if is_math(op) and is_pure(op):
             expr = normalize(op, args)
             U.add(expr)
             e_use[i].add(expr)
+    for i, inst in enumerate(insts):
+        out = inst.get("out")
         if out:
             for expr in U:
-                # BUG FIX #2: same substring-vs-membership bug as in
-                # _available_expressions.  Use expr[1:] (tuple slice).
                 if out in expr[1:]:
                     e_kill[i].add(expr)
 
-    def solve(
-        forward: bool,
-        intersect: bool,
-        transfer_func,
-        initial_set: Set,
-    ) -> Tuple[List[Set], List[Set]]:
-        nodes = list(range(n))
-        if not forward:
-            nodes.reverse()
-
-        IN  = [set(initial_set) for _ in range(n)]
-        OUT = [set(initial_set) for _ in range(n)]
-
-        if forward:
+    def solve_dataflow(forward: bool, meet_is_intersect: bool, transfer_func, init_val):
+        IN = [set(init_val) for _ in range(n)]
+        OUT = [set(init_val) for _ in range(n)]
+        if forward and n > 0:
             IN[0] = set()
-        else:
-            OUT[n - 1] = set()
-
+        if not forward:
+            for i in range(n):
+                if not succs[i]:
+                    OUT[i] = set()
         changed = True
         while changed:
             changed = False
-            for i in nodes:
+            order = range(n) if forward else reversed(range(n))
+            for i in order:
+                if forward and i == 0:
+                    continue
                 neighbors = preds[i] if forward else succs[i]
-                if neighbors:
-                    combined = set(OUT[neighbors[0]] if forward else IN[neighbors[0]])
-                    for nb in neighbors[1:]:
-                        nb_set = OUT[nb] if forward else IN[nb]
-                        if intersect:
-                            combined &= nb_set
+                if not neighbors:
+                    meet_set = set()
+                else:
+                    neighbor_states = [OUT[p] if forward else IN[p] for p in neighbors]
+                    meet_set = set(neighbor_states[0])
+                    for state in neighbor_states[1:]:
+                        if meet_is_intersect:
+                            meet_set &= state
                         else:
-                            combined |= nb_set
-                else:
-                    combined = set()
-
+                            meet_set |= state
                 if forward:
-                    IN[i] = combined
+                    IN[i] = meet_set
                 else:
-                    OUT[i] = combined
-
-                new_val = transfer_func(i, IN[i] if forward else OUT[i])
-                target = OUT if forward else IN
-                if target[i] != new_val:
-                    target[i] = new_val
+                    OUT[i] = meet_set
+                new_state = transfer_func(i, IN[i] if forward else OUT[i])
+                target_list = OUT if forward else IN
+                if target_list[i] != new_state:
+                    target_list[i] = new_state
                     changed = True
         return IN, OUT
 
-    # Step 2: Anticipated (backward, intersect)
-    antic_in, _ = solve(
-        False, True,
-        lambda i, out_i: e_use[i] | (out_i - e_kill[i]),
-        U,
+    # Step 2: Anticipated Expressions (Backward, Intersect)
+    antic_in, antic_out = solve_dataflow(
+        forward=False, meet_is_intersect=True, init_val=U,
+        transfer_func=lambda i, out_i: e_use[i] | (out_i - e_kill[i])
     )
 
-    # Step 3: Available (forward, intersect)
-    avail_in, _ = solve(
-        True, True,
-        lambda i, in_i: (antic_in[i] | in_i) - e_kill[i],
-        U,
+    # Step 3: Available Expressions (Forward, Intersect)
+    avail_in, avail_out = solve_dataflow(
+        forward=True, meet_is_intersect=True, init_val=U,
+        transfer_func=lambda i, in_i: (antic_in[i] | in_i) - e_kill[i]
     )
 
-    # Step 4: Earliest
+    # Step 4: Earliest Placements
     earliest = [antic_in[i] - avail_in[i] for i in range(n)]
 
-    # Step 5: Postponable (forward, intersect)
-    post_in, _ = solve(
-        True, True,
-        lambda i, in_i: (earliest[i] | in_i) - e_use[i],
-        U,
+    # Step 5: Postponable Expressions (Forward, Intersect)
+    postp_in, postp_out = solve_dataflow(
+        forward=True, meet_is_intersect=True, init_val=U,
+        transfer_func=lambda i, in_i: (earliest[i] | in_i) - e_use[i]
     )
 
-    # Step 6: Latest
+    # Step 6: Latest Placements
     latest = [set() for _ in range(n)]
     for i in range(n):
-        ear_post = earliest[i] | post_in[i]
-        succ_comp = set(U)
+        base_set = earliest[i] | postp_in[i]
+        succ_intersect = set(U)
         if succs[i]:
             for s in succs[i]:
-                succ_comp &= (earliest[s] | post_in[s])
+                succ_intersect &= (earliest[s] | postp_in[s])
         else:
-            succ_comp = set()
-        latest[i] = ear_post & (e_use[i] | (U - succ_comp))
+            succ_intersect = set()
+        latest[i] = base_set & (e_use[i] | (U - succ_intersect))
 
-    # Step 7: Used (backward, union)
-    _, used_out = solve(
-        False, False,
-        lambda i, out_i: (e_use[i] | out_i) - latest[i],
-        set(),
+    # Step 7: Used Expressions (Backward, Union)
+    used_in, used_out = solve_dataflow(
+        forward=False, meet_is_intersect=False, init_val=set(),
+        transfer_func=lambda i, out_i: (e_use[i] | out_i) - latest[i]
     )
 
-    # Step 8: Transform
-    expr_to_temp = {expr: f"t_lcm_{idx}" for idx, expr in enumerate(U)}
+    # Step 8: Code Rewriting
+    temp_counter = 0
+    expr_to_temp = {}
     new_insts = []
-    for i, inst in enumerate(insts):
-        for expr in latest[i] & used_out[i]:
-            new_insts.append({
-                "op": expr[0],
-                "args": list(expr[1:]),
-                "out": expr_to_temp[expr],
-            })
+    index_shift = 0
+    old_to_new_mapping = {}
 
-        op, args, out = inst["op"], inst.get("args", []), inst.get("out")
+    for i, inst in enumerate(insts):
+        old_to_new_mapping[i] = i + index_shift
+
+        insertions = latest[i] & used_out[i]
+        for expr in insertions:
+            if expr not in expr_to_temp:
+                expr_to_temp[expr] = f"pre_t{temp_counter}"
+                temp_counter += 1
+            op, args = expr[0], list(expr[1:])
+            new_insts.append({"op": op, "args": args, "out": expr_to_temp[expr]})
+            index_shift += 1
+
+        replacements = e_use[i] & ((U - latest[i]) | used_out[i])
+        op, args, out = inst.get("op"), inst.get("args", []), inst.get("out")
+
         if is_math(op) and is_pure(op):
             expr = normalize(op, args)
-            if expr in (used_out[i] | latest[i]):
+            if expr in replacements and expr in expr_to_temp:
                 new_insts.append({"op": "id", "args": [expr_to_temp[expr]], "out": out})
                 continue
 
         new_insts.append(inst)
 
+    # Update control flow targets after insertions shifted indices
+    for inst in new_insts:
+        op = inst["op"]
+        if op == "jmp" and inst.get("args"):
+            inst["args"][0] = old_to_new_mapping.get(inst["args"][0], inst["args"][0])
+        elif op in {"br", "cbr"} and len(inst.get("args", [])) >= 2:
+            inst["args"][0] = old_to_new_mapping.get(inst["args"][0], inst["args"][0])
+            inst["args"][1] = old_to_new_mapping.get(inst["args"][1], inst["args"][1])
+
     program["instructions"] = new_insts
     return program
 
 
+# FIX: removed dead assignment `lazy_code_motion = _partial_redundancy_elimination`
+# that was immediately overwritten by the function definition below.
 def lazy_code_motion(ir: "IRProgram") -> "IRProgram":
     """
-    BUG FIX #5: env.py calls this function with an IRProgram (it uses the
-    flat↔IR bridge for the 'lcm' pass).  The old codebase had no such function
-    — only `partial_redundancy_elimination` operating on plain dicts.
-
-    This wrapper flattens the IR, runs PRE, then reconstructs the IR.
+    env.py calls this with an IRProgram (flat<->IR bridge for the 'lcm' pass).
+    Flattens the IR, runs PRE, then reconstructs the IR.
     """
     from env.models import IRProgram as IR, BasicBlock
-
     flat_insts: List[Dict[str, Any]] = []
     for block in ir.blocks:
         flat_insts.extend(block.insts)
-
     if not flat_insts:
         return ir
-
     result = _partial_redundancy_elimination({"instructions": flat_insts})
     new_insts = result["instructions"]
-
-    # Re-partition into basic blocks on terminator boundaries.
     new_blocks: List[BasicBlock] = []
     current: List[Dict[str, Any]] = []
     block_idx = 0
@@ -698,11 +830,9 @@ def lazy_code_motion(ir: "IRProgram") -> "IRProgram":
         new_blocks.append(
             BasicBlock(label=f"b{block_idx}", insts=current, preds=[], succs=[])
         )
-
     return IR(blocks=new_blocks, entry="b0")
 
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
-
 def noop(program: Dict[str, Any]) -> Dict[str, Any]:
     return program

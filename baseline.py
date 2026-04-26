@@ -3,15 +3,25 @@ from env.tasks import get_tasks
 
 # Reordered to let CSE/Propagations happen before the Folder masks them with constants
 PASS_SEQUENCE = [
+    # 1. Enable structure first
     "copy_prop",
+    "const_fold",
+
+    # 2. Expose redundancy
     "local_cse",
     "global_cse",
+
+    # 3. Move computations (CRITICAL)
+    "code_motion",   # your LICM-like pass
+    "lcm",           # PRE
+
+    # 4. Memory optimization
     "store_load_fwd",
     "dead_store_elim",
+
+    # 5. Cleanup
     "const_fold",
     "dead_code_elim",
-    "lcm",
-    "code_motion",
 ]
 
 def run_task(task):
@@ -44,8 +54,7 @@ def run_task(task):
             # continue through the pipeline (reaching global/lcm passes).
         else:
             no_progress_streak += 1
-
-        pass_index += 1
+            pass_index += 1
 
         if done:
             break
