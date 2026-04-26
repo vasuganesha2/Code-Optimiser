@@ -1,7 +1,10 @@
 # MetaMalloc: RL-Powered Compiler and Memory Optimization Engine
 
 [![Project Presentation](https://img.shields.io/badge/Google_Slides-Project_Presentation-blue?style=for-the-badge&logo=googleslides)](https://docs.google.com/presentation/d/1EVJ1FmEybGURW1movLrEWtVliDnHBys6Uy4J8EXFuwE/edit?usp=sharing)
-[![Hugging Face](https://huggingface.co/spaces/vasuganesha1/meta1)](https://huggingface.co/)
+
+[![Hugging Face Space](https://img.shields.io/badge/HuggingFace-Live_Demo-yellow?style=for-the-badge&logo=huggingface)](https://huggingface.co/spaces/vasuganesha1/meta1)
+
+[![Technical Blog](https://img.shields.io/badge/Blog-Coming_Soon-black?style=for-the-badge&logo=hashnode)](#)
 
 ## Overview
 **MetaMalloc** is a reinforcement learning–driven optimization engine designed to improve both compute efficiency and memory utilization in modern programs. Unlike traditional compilers that rely on fixed heuristics, MetaMalloc models optimization as a sequential decision-making problem, allowing it to adapt to different programs and execution patterns.
